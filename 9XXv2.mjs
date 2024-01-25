@@ -735,10 +735,10 @@ function test_rop(Chain) {
     }
 }
 
-//debug_log('Chain900');
-//test_rop(Chain);
+debug_log('Chain900');
+test_rop(Chain);
 
-function mlock_gadgets(gadgets) {
+/*function mlock_gadgets(gadgets) {
     const chain = new Chain();
 
     for (const [gadget, addr] of gadgets) {
@@ -1260,4 +1260,4 @@ async function kexploit() {
     await kexec_payload(kchain, sd, mmap_area, scratch);
 }
 
-kexploit();
+kexploit();*/
