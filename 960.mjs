@@ -466,6 +466,9 @@ class Chain950Base extends ChainBase {
     }
 }
 
+// helper object for ROP
+const rop_ta = document.createElement('textarea');
+
 // Chain for PS4 9.60
 class Chain950 extends Chain950Base {
     constructor() {
