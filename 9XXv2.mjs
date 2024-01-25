@@ -557,7 +557,7 @@ const rop_ta = document.createElement('textarea');
 const Chain = Chain900;*/
 
 // Chain for PS4 9.00
-class Chain900 extends Chain850Base {
+class Chain900 extends Chain900Base {
     constructor() {
         super();
 
