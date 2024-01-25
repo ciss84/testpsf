@@ -31,11 +31,11 @@ export const ps4_8_03 = 1;
 
 // this version for 9.xx
 export const ps4_9_00 = 2;
-
-// version 9.xx is for ps5 1.xx-5.xx as well
 export const ps4_9_04 = ps4_9_00;
 export const ps4_9_03 = ps4_9_00;
 
+// version 9.xx is for ps5 1.xx-5.xx as well
+export const ps5_5_00 = ps4_9_00;
 
 // this version for 6.50-6.72
 export const ps4_6_50 = 3;
