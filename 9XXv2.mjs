@@ -42,9 +42,7 @@ const url = `${origin}:${port}`;
 
 const syscall_array = [];
 
-const offset_func_exec = 0x18;
 const offset_textarea_impl = 0x18;
-const offset_js_inline_prop = 0x10;
 
 // WebKit offsets of imported functions
 const offset_wk_stack_chk_fail = 0x178;
